@@ -6,15 +6,14 @@ struct ShareSheet: UIViewControllerRepresentable {
     let activityItems: [Any]
     
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        let controller = UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
-        return controller
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
     }
     
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
-// MARK: - Live Waveform Canvas
-struct ThermalWaveformChart: View {
+// MARK: - Clean Light-Mode Waveform Chart
+struct CockpitWaveformChart: View {
     let records: [TelemetryRecord]
     
     var body: some View {
@@ -25,7 +24,7 @@ struct ThermalWaveformChart: View {
             let maxTemp: Double = 95.0
             let tempRange = maxTemp - minTemp
             
-            // Draw horizontal grid lines (35, 50, 65, 80)
+            // Horizontal reference lines (35, 50, 65, 80°C)
             let gridTemps: [Double] = [35.0, 50.0, 65.0, 80.0]
             for gTemp in gridTemps {
                 let yNorm = 1.0 - (gTemp - minTemp) / tempRange
@@ -34,23 +33,24 @@ struct ThermalWaveformChart: View {
                 var gridPath = Path()
                 gridPath.move(to: CGPoint(x: 0, y: yPos))
                 gridPath.addLine(to: CGPoint(x: size.width, y: yPos))
-                context.stroke(gridPath, with: .color(Color.gray.opacity(0.18)), lineWidth: 1)
+                context.stroke(gridPath, with: .color(Color(UIColor.systemGray5)), lineWidth: 1)
                 
                 context.draw(
-                    Text("\(Int(gTemp))°C").font(.system(size: 9, design: .monospaced)).foregroundColor(.gray.opacity(0.6)),
+                    Text("\(Int(gTemp))°C")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundColor(Color(UIColor.tertiaryLabel)),
                     at: CGPoint(x: 18, y: yPos - 6)
                 )
             }
             
-            // Path for temperature curve
+            // Curve path
             var linePath = Path()
             var fillPath = Path()
-            
             let stepX = size.width / CGFloat(max(1, records.count - 1))
             
             for (index, record) in records.enumerated() {
                 let x = CGFloat(index) * stepX
-                let clampedTemp = max(minTemp, min(record.cpuTemp, maxTemp))
+                let clampedTemp = max(minTemp, min(record.peakDieTemp, maxTemp))
                 let yNorm = 1.0 - (clampedTemp - minTemp) / tempRange
                 let y = CGFloat(yNorm) * size.height
                 
@@ -64,239 +64,264 @@ struct ThermalWaveformChart: View {
                 }
             }
             
-            if let last = records.last {
+            if let _ = records.last {
                 let lastX = CGFloat(records.count - 1) * stepX
                 fillPath.addLine(to: CGPoint(x: lastX, y: size.height))
                 fillPath.closeSubpath()
             }
             
-            // Gradient fill under curve
+            // Subtle fill
             let gradient = Gradient(colors: [
-                Color.orange.opacity(0.35),
-                Color.red.opacity(0.15),
+                Color.orange.opacity(0.18),
+                Color.orange.opacity(0.04),
                 Color.clear
             ])
             context.fill(fillPath, with: .linearGradient(gradient, startPoint: CGPoint(x: 0, y: 0), endPoint: CGPoint(x: 0, y: size.height)))
             
-            // Stroke curve
-            context.stroke(linePath, with: .color(Color(red: 1.0, green: 0.42, blue: 0.0)), lineWidth: 2.2)
+            // Crisp vector line
+            context.stroke(linePath, with: .color(Color.orange), lineWidth: 2.0)
         }
-        .frame(height: 140)
-        .background(Color.black.opacity(0.4))
-        .cornerRadius(12)
+        .frame(height: 130)
+        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .cornerRadius(10)
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.gray.opacity(0.2), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color(UIColor.separator).opacity(0.35), lineWidth: 1)
         )
     }
 }
 
-// MARK: - Main Diagnostic View
+// MARK: - Main Cockpit View
 struct ContentView: View {
     @StateObject private var logManager = LogManager.shared
     @StateObject private var bgManager = BackgroundAudioManager.shared
     
     @State private var shareURL: URL?
     @State private var showShareSheet = false
+    @State private var showDeleteConfirm = false
     
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(spacing: 16) {
-                // Header Deck
+                // 1. Cockpit Flight Deck Header
                 HStack(alignment: .center) {
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
-                            Text("⚡ ThermalCore")
-                                .font(.system(size: 22, weight: .black, design: .rounded))
-                                .foregroundColor(.white)
-                            Text("PRO")
-                                .font(.system(size: 10, weight: .bold))
-                                .padding(.horizontal, 5)
+                            Text("THERMALCORE")
+                                .font(.system(size: 20, weight: .heavy, design: .monospaced))
+                                .foregroundColor(.primary)
+                            Text("COCKPIT")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
-                                .background(Color.orange.opacity(0.25))
-                                .foregroundColor(.orange)
+                                .background(Color.blue.opacity(0.12))
+                                .foregroundColor(.blue)
                                 .cornerRadius(4)
                         }
-                        Text("Apple A17 Pro · 6 Cores · 8 GB RAM")
-                            .font(.caption2)
-                            .foregroundColor(.gray)
+                        Text("Apple A17 Pro (2P + 4E) · High-Frequency Avionics")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.secondary)
                     }
                     Spacer()
                     
-                    // Live Status Beacon
-                    HStack(spacing: 6) {
+                    // Live Status Pill
+                    HStack(spacing: 5) {
                         Circle()
-                            .fill(logManager.isRecording ? Color.green : Color.gray)
+                            .fill(logManager.isRecording ? Color.red : Color.green)
                             .frame(width: 8, height: 8)
-                            .shadow(color: logManager.isRecording ? Color.green.opacity(0.8) : Color.clear, radius: 4)
-                        Text(logManager.isRecording ? "\(Int(1.0 / logManager.samplingInterval)) Hz" : "IDLE")
+                        Text(logManager.isRecording ? String(format: "REC %04.1fs", logManager.elapsedTime) : "\(Int(1.0 / logManager.samplingInterval))Hz LIVE")
                             .font(.system(size: 11, weight: .bold, design: .monospaced))
-                            .foregroundColor(logManager.isRecording ? .green : .gray)
+                            .foregroundColor(logManager.isRecording ? .red : .green)
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
-                    .background(Color(UIColor.secondarySystemBackground).opacity(0.4))
+                    .background(Color(UIColor.secondarySystemGroupedBackground))
                     .cornerRadius(8)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color(UIColor.separator).opacity(0.4), lineWidth: 1)
+                    )
                 }
                 .padding(.horizontal, 4)
-                .padding(.top, 4)
+                .padding(.top, 6)
                 
-                // 1. Hero Temperature Gauge Card
-                VStack(spacing: 12) {
-                    HStack(alignment: .top) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("CPU DIE TEMPERATURE")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundColor(.gray)
-                            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                                Text(String(format: "%.1f", logManager.currentTemp))
-                                    .font(.system(size: 54, weight: .black, design: .rounded))
-                                    .foregroundColor(tempColor(logManager.currentTemp))
-                                Text("°C")
-                                    .font(.system(size: 24, weight: .bold, design: .rounded))
-                                    .foregroundColor(.gray)
-                            }
-                        }
+                // 2. Primary Flight Display (PFD) 3-Dial Cluster
+                HStack(spacing: 10) {
+                    pfdGauge(
+                        title: "PEAK DIE",
+                        value: String(format: "%.1f°C", logManager.currentPeakTemp),
+                        subtitle: logManager.thermalStateText,
+                        color: tempColor(logManager.currentPeakTemp)
+                    )
+                    
+                    pfdGauge(
+                        title: "CPU LOAD",
+                        value: String(format: "%.1f%%", logManager.totalCpuUsage),
+                        subtitle: "\(logManager.ramUsedMB.formatted(.number.precision(.fractionLength(0))))MB RAM",
+                        color: .blue
+                    )
+                    
+                    pfdGauge(
+                        title: "HEADROOM",
+                        value: String(format: "+%.1f°C", logManager.thermalHeadroom),
+                        subtitle: "\(logManager.throttlingRisk)% RISK",
+                        color: logManager.thermalHeadroom < 15 ? .red : (logManager.thermalHeadroom < 30 ? .orange : .green)
+                    )
+                }
+                
+                // 3. Multi-Zone Thermal Instrument Matrix (온도 상세 계기판)
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Image(systemName: "thermometer.medium")
+                            .foregroundColor(.orange)
+                            .font(.system(size: 12, weight: .bold))
+                        Text("MULTI-ZONE THERMAL SENSORS")
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundColor(.secondary)
                         Spacer()
-                        
-                        // Thermal State Pill Badge
-                        VStack(alignment: .trailing, spacing: 6) {
-                            Text(logManager.thermalStateText)
-                                .font(.system(size: 11, weight: .black, design: .monospaced))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(thermalColor(logManager.thermalStateText).opacity(0.2))
-                                .foregroundColor(thermalColor(logManager.thermalStateText))
-                                .cornerRadius(6)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 6)
-                                        .stroke(thermalColor(logManager.thermalStateText).opacity(0.4), lineWidth: 1)
-                                )
-                            
-                            HStack(spacing: 4) {
-                                Image(systemName: logManager.isHardwareSensor ? "cpu" : "waveform.path")
-                                    .font(.system(size: 10))
-                                Text(logManager.isHardwareSensor ? "IOKit PMU" : "Fusion Sensor")
-                                    .font(.system(size: 10, weight: .medium))
-                            }
-                            .foregroundColor(.gray)
-                        }
+                        Text(logManager.sensorMode)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(.secondary)
                     }
                     
-                    Divider().background(Color.gray.opacity(0.25))
-                    
-                    // Min / Max / Avg Metrics Bar
-                    HStack(spacing: 12) {
-                        statItem(label: "MIN", value: String(format: "%.1f°C", logManager.minTemp < 100 ? logManager.minTemp : logManager.currentTemp), color: .cyan)
-                        Spacer()
-                        statItem(label: "AVG", value: String(format: "%.1f°C", logManager.avgTemp > 0 ? logManager.avgTemp : logManager.currentTemp), color: .orange)
-                        Spacer()
-                        statItem(label: "MAX", value: String(format: "%.1f°C", logManager.maxTemp > 0 ? logManager.maxTemp : logManager.currentTemp), color: .red)
-                        Spacer()
-                        statItem(label: "SAMPLES", value: "\(logManager.sampleCount)", color: .white)
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                        zoneItem(label: "P-CORE (P1-P2)", temp: logManager.currentPTemp, desc: "High Performance")
+                        zoneItem(label: "E-CORE (E1-E4)", temp: logManager.currentETemp, desc: "High Efficiency")
+                        zoneItem(label: "GPU CLUSTER", temp: logManager.currentGPUTemp, desc: "Metal Graphics")
+                        zoneItem(label: "BATTERY PMU", temp: logManager.currentBatTemp, desc: "Power Cell")
+                        zoneItem(label: "CHASSIS", temp: logManager.currentChassisTemp, desc: "Surface Enclosure")
+                        zoneItem(label: "TJMAX LIMIT", temp: 95.0, desc: "Throttle Target", isTarget: true)
                     }
                 }
-                .padding(18)
-                .background(Color(UIColor.secondarySystemBackground).opacity(0.35))
-                .cornerRadius(16)
+                .padding(14)
+                .background(Color(UIColor.secondarySystemGroupedBackground))
+                .cornerRadius(12)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(tempColor(logManager.currentTemp).opacity(0.35), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color(UIColor.separator).opacity(0.4), lineWidth: 1)
                 )
                 
-                // 2. Real-time Waveform Chart
-                VStack(alignment: .leading, spacing: 8) {
+                // 4. Hexa-Core Load Tape Matrix (6-Core Airspeed Tapes)
+                VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        Image(systemName: "chart.xyaxis.line")
-                            .font(.system(size: 13))
-                            .foregroundColor(.orange)
-                        Text("REAL-TIME THERMAL TELEMETRY")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(.white)
+                        Image(systemName: "cpu")
+                            .foregroundColor(.blue)
+                            .font(.system(size: 12, weight: .bold))
+                        Text("CORE TELEMETRY TAPES")
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundColor(.secondary)
                         Spacer()
-                        Text(logManager.isRecording ? "Live (\(logManager.chartHistory.count) pts)" : "Paused")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(.gray)
+                        Text("2P + 4E DUAL CLUSTER")
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundColor(.secondary)
                     }
                     
-                    ThermalWaveformChart(records: logManager.chartHistory)
-                }
-                .padding(16)
-                .background(Color(UIColor.secondarySystemBackground).opacity(0.35))
-                .cornerRadius(16)
-                
-                // 3. Control Deck
-                VStack(spacing: 14) {
-                    HStack(spacing: 12) {
-                        // Start/Stop Primary Action
-                        Button(action: {
-                            let impact = UIImpactFeedbackGenerator(style: .medium)
-                            impact.impactOccurred()
-                            if logManager.isRecording {
-                                logManager.stopLogging()
-                            } else {
-                                logManager.startLogging()
-                            }
-                        }) {
-                            HStack(spacing: 8) {
-                                Image(systemName: logManager.isRecording ? "stop.fill" : "record.circle.fill")
-                                    .font(.headline)
-                                Text(logManager.isRecording ? "STOP RECORDING" : "START LOGGING")
-                                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    HStack(spacing: 8) {
+                        ForEach(0..<min(6, logManager.perCoreUsage.count), id: \.self) { i in
+                            VStack(spacing: 3) {
+                                Text(i < 2 ? "P\(i+1)" : "E\(i-1)")
+                                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                    .foregroundColor(i < 2 ? .orange : .blue)
+                                
+                                ZStack(alignment: .bottom) {
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .fill(Color(UIColor.systemGray5))
+                                        .frame(height: 50)
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .fill(i < 2 ? Color.orange : Color.blue)
+                                        .frame(height: max(2, CGFloat(logManager.perCoreUsage[i] / 100.0) * 50))
+                                }
+                                
+                                Text("\(Int(logManager.perCoreUsage[i]))%")
+                                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                                    .foregroundColor(.primary)
                             }
                             .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                            .background(logManager.isRecording ? Color.red.opacity(0.85) : Color.orange)
-                            .foregroundColor(.white)
-                            .cornerRadius(12)
-                            .shadow(color: (logManager.isRecording ? Color.red : Color.orange).opacity(0.4), radius: 8)
                         }
-                        
-                        // Clear Button
-                        Button(action: {
-                            let gen = UINotificationFeedbackGenerator()
-                            gen.notificationOccurred(.warning)
-                            logManager.clearData()
-                        }) {
-                            Image(systemName: "arrow.counterclockwise")
+                    }
+                }
+                .padding(14)
+                .background(Color(UIColor.secondarySystemGroupedBackground))
+                .cornerRadius(12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color(UIColor.separator).opacity(0.4), lineWidth: 1)
+                )
+                
+                // 5. Cockpit Waveform Instrument
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Image(systemName: "waveform.path.ecg")
+                            .foregroundColor(.orange)
+                            .font(.system(size: 12, weight: .bold))
+                        Text("FLIGHT RECORDER TELEMETRY")
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text("\(logManager.chartHistory.count) PTS · 120Hz")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    CockpitWaveformChart(records: logManager.chartHistory)
+                }
+                .padding(14)
+                .background(Color(UIColor.secondarySystemGroupedBackground))
+                .cornerRadius(12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color(UIColor.separator).opacity(0.4), lineWidth: 1)
+                )
+                
+                // 6. Master Flight Controls (제어반)
+                VStack(spacing: 12) {
+                    // Start/Stop Primary Button
+                    Button(action: {
+                        let impact = UIImpactFeedbackGenerator(style: .medium)
+                        impact.impactOccurred()
+                        if logManager.isRecording {
+                            logManager.stopLogging()
+                        } else {
+                            logManager.startLogging()
+                        }
+                    }) {
+                        HStack(spacing: 8) {
+                            Image(systemName: logManager.isRecording ? "stop.circle.fill" : "record.circle.fill")
                                 .font(.system(size: 16, weight: .bold))
-                                .foregroundColor(.gray)
-                                .frame(width: 48, height: 48)
-                                .background(Color.white.opacity(0.08))
-                                .cornerRadius(12)
+                            Text(logManager.isRecording ? "STOP & SAVE LOG" : "START FLIGHT RECORDING")
+                                .font(.system(size: 14, weight: .bold, design: .monospaced))
                         }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 13)
+                        .background(logManager.isRecording ? Color.red : Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
                     }
                     
                     // Sampling Frequency Selector
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("SAMPLING FREQUENCY")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.gray)
-                        
-                        HStack(spacing: 8) {
-                            freqButton(label: "0.1s (10 Hz)", interval: 0.1)
-                            freqButton(label: "0.5s (2 Hz)", interval: 0.5)
-                            freqButton(label: "1.0s (1 Hz)", interval: 1.0)
-                        }
+                    HStack(spacing: 8) {
+                        freqPill(label: "10 Hz (0.1s)", interval: 0.1)
+                        freqPill(label: "2 Hz (0.5s)", interval: 0.5)
+                        freqPill(label: "1 Hz (1.0s)", interval: 1.0)
                     }
                     
-                    Divider().background(Color.gray.opacity(0.2))
+                    Divider().background(Color(UIColor.separator).opacity(0.3))
                     
-                    // Background Keep-Alive Toggle
+                    // Background Keep-Alive Audio Toggle
                     HStack {
-                        VStack(alignment: .leading, spacing: 3) {
+                        VStack(alignment: .leading, spacing: 2) {
                             Text("Background Audio Keep-Alive")
                                 .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(.white)
-                            Text("화면 소등 및 타 앱 사용 중에도 0.1초 기록 유지")
-                                .font(.caption2)
-                                .foregroundColor(.gray)
+                                .foregroundColor(.primary)
+                            Text("화면을 끄거나 타 앱 전환 시에도 0.1초 기록 유지")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
                         }
                         Spacer()
                         Toggle("", isOn: Binding(
                             get: { bgManager.isBackgroundModeActive },
-                            set: { newValue in
-                                if newValue {
+                            set: { val in
+                                if val {
                                     bgManager.startKeepAlive()
                                 } else {
                                     bgManager.stopKeepAlive()
@@ -304,100 +329,71 @@ struct ContentView: View {
                             }
                         ))
                         .labelsHidden()
-                        .tint(.orange)
+                        .tint(.blue)
                     }
                 }
-                .padding(16)
-                .background(Color(UIColor.secondarySystemBackground).opacity(0.35))
-                .cornerRadius(16)
+                .padding(14)
+                .background(Color(UIColor.secondarySystemGroupedBackground))
+                .cornerRadius(12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color(UIColor.separator).opacity(0.4), lineWidth: 1)
+                )
                 
-                // 4. System Telemetry Deck
+                // 7. Storage Footprint & Data Export Deck (용량 및 데이터)
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Image(systemName: "cpu")
-                            .foregroundColor(.cyan)
-                        Text("HARDWARE TELEMETRY")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(.white)
+                        Image(systemName: "internaldrive")
+                            .foregroundColor(.indigo)
+                            .font(.system(size: 12, weight: .bold))
+                        Text("STORAGE FOOTPRINT & EXPORT")
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundColor(.secondary)
                         Spacer()
-                        Text("6 CORES")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(.gray)
                     }
                     
+                    // Storage Meter Display
                     HStack {
-                        metricRow(title: "CPU Load", val: String(format: "%.1f%%", logManager.totalCpuUsage), icon: "gauge")
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("로그 파일 누적 용량")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.secondary)
+                            Text(logManager.totalStorageString)
+                                .font(.system(size: 20, weight: .bold, design: .monospaced))
+                                .foregroundColor(.primary)
+                        }
                         Spacer()
-                        metricRow(title: "RAM (App/Total)", val: "\(Int(logManager.ramUsedMB))MB / \(String(format: "%.0fGB", logManager.ramTotalGB))", icon: "memorychip")
-                        Spacer()
-                        metricRow(title: "Battery", val: "\(logManager.batteryLevel)% \(logManager.isCharging ? "⚡" : "")", icon: "battery.100")
-                    }
-                    
-                    // Core mini load bars
-                    if !logManager.perCoreUsage.isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("PER-CORE WORKLOAD (2P + 4E)")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundColor(.gray)
-                            HStack(spacing: 4) {
-                                ForEach(0..<logManager.perCoreUsage.count, id: \.self) { i in
-                                    VStack(spacing: 2) {
-                                        Text("C\(i+1)")
-                                            .font(.system(size: 8, design: .monospaced))
-                                            .foregroundColor(.gray)
-                                        ZStack(alignment: .bottom) {
-                                            RoundedRectangle(cornerRadius: 3)
-                                                .fill(Color.gray.opacity(0.2))
-                                                .frame(height: 32)
-                                            RoundedRectangle(cornerRadius: 3)
-                                                .fill(i < 2 ? Color.orange : Color.cyan)
-                                                .frame(height: CGFloat(logManager.perCoreUsage[i] / 100.0) * 32)
-                                        }
-                                        Text("\(Int(logManager.perCoreUsage[i]))%")
-                                            .font(.system(size: 8, design: .monospaced))
-                                            .foregroundColor(.white)
-                                    }
-                                    .frame(maxWidth: .infinity)
-                                }
-                            }
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text("보유 세션")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.secondary)
+                            Text("\(logManager.sessionFilesCount)개 파일")
+                                .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                                .foregroundColor(.primary)
                         }
                     }
-                }
-                .padding(16)
-                .background(Color(UIColor.secondarySystemBackground).opacity(0.35))
-                .cornerRadius(16)
-                
-                // 5. Export Deck
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Image(systemName: "square.and.arrow.up")
-                            .foregroundColor(.yellow)
-                        Text("DATA EXPORT & LOGS")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(.white)
-                        Spacer()
-                        Text("\(logManager.sampleCount) Recorded")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(.gray)
-                    }
+                    .padding(10)
+                    .background(Color(UIColor.systemGray6))
+                    .cornerRadius(8)
                     
-                    HStack(spacing: 12) {
+                    // Action Buttons
+                    HStack(spacing: 10) {
                         Button(action: {
                             if let url = logManager.exportCSV() {
                                 shareURL = url
                                 showShareSheet = true
                             }
                         }) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "tablecells")
-                                Text("EXPORT CSV")
-                                    .font(.system(size: 13, weight: .bold))
+                            HStack(spacing: 5) {
+                                Image(systemName: "doc.text")
+                                Text("CSV 공유")
+                                    .font(.system(size: 12, weight: .bold))
                             }
                             .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .background(Color.yellow.opacity(0.2))
-                            .foregroundColor(.yellow)
-                            .cornerRadius(10)
+                            .padding(.vertical, 10)
+                            .background(Color.blue.opacity(0.1))
+                            .foregroundColor(.blue)
+                            .cornerRadius(8)
                         }
                         
                         Button(action: {
@@ -406,99 +402,125 @@ struct ContentView: View {
                                 showShareSheet = true
                             }
                         }) {
-                            HStack(spacing: 6) {
+                            HStack(spacing: 5) {
                                 Image(systemName: "curlybraces")
-                                Text("EXPORT JSON")
-                                    .font(.system(size: 13, weight: .bold))
+                                Text("JSON 공유")
+                                    .font(.system(size: 12, weight: .bold))
                             }
                             .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .background(Color.cyan.opacity(0.2))
-                            .foregroundColor(.cyan)
-                            .cornerRadius(10)
+                            .padding(.vertical, 10)
+                            .background(Color.indigo.opacity(0.1))
+                            .foregroundColor(.indigo)
+                            .cornerRadius(8)
+                        }
+                        
+                        Button(action: {
+                            showDeleteConfirm = true
+                        }) {
+                            HStack(spacing: 4) {
+                                Image(systemName: "trash")
+                                Text("삭제")
+                                    .font(.system(size: 12, weight: .bold))
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .background(Color.red.opacity(0.1))
+                            .foregroundColor(.red)
+                            .cornerRadius(8)
                         }
                     }
                 }
-                .padding(16)
-                .background(Color(UIColor.secondarySystemBackground).opacity(0.35))
-                .cornerRadius(16)
+                .padding(14)
+                .background(Color(UIColor.secondarySystemGroupedBackground))
+                .cornerRadius(12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color(UIColor.separator).opacity(0.4), lineWidth: 1)
+                )
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 32)
+            .padding(.horizontal, 14)
+            .padding(.bottom, 28)
         }
-        .background(Color(red: 0.05, green: 0.05, blue: 0.07).ignoresSafeArea())
-        .preferredColorScheme(.dark)
+        .background(Color(UIColor.systemGroupedBackground).ignoresSafeArea())
+        .preferredColorScheme(.light) // Force clean Apple native Light Mode!
         .sheet(isPresented: $showShareSheet) {
             if let url = shareURL {
                 ShareSheet(activityItems: [url])
             }
         }
-    }
-    
-    // Helpers
-    private func tempColor(_ temp: Double) -> Color {
-        if temp < 45.0 {
-            return Color.cyan
-        } else if temp < 65.0 {
-            return Color.orange
-        } else {
-            return Color(red: 1.0, green: 0.25, blue: 0.25)
-        }
-    }
-    
-    private func thermalColor(_ state: String) -> Color {
-        switch state {
-        case "NOMINAL":  return .green
-        case "FAIR":     return .yellow
-        case "SERIOUS":  return .orange
-        case "CRITICAL": return .red
-        default:         return .gray
-        }
-    }
-    
-    private func statItem(label: String, value: String, color: Color) -> some View {
-        VStack(spacing: 3) {
-            Text(label)
-                .font(.system(size: 9, weight: .bold))
-                .foregroundColor(.gray)
-            Text(value)
-                .font(.system(size: 13, weight: .bold, design: .monospaced))
-                .foregroundColor(color)
-        }
-    }
-    
-    private func metricRow(title: String, val: String, icon: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.system(size: 10))
-                    .foregroundColor(.gray)
-                Text(title)
-                    .font(.system(size: 10))
-                    .foregroundColor(.gray)
+        .alert("로그 파일 전체 삭제", isPresented: $showDeleteConfirm) {
+            Button("취소", role: .cancel) {}
+            Button("모두 삭제", role: .destructive) {
+                logManager.clearAllLogs()
             }
-            Text(val)
-                .font(.system(size: 13, weight: .bold, design: .monospaced))
-                .foregroundColor(.white)
+        } message: {
+            Text("기기에 저장된 모든 CSV 및 JSON 텔레메트리 로그를 삭제하여 용량을 확보하시겠습니까?")
         }
     }
     
-    private func freqButton(label: String, interval: Double) -> some View {
+    // UI Helpers
+    private func pfdGauge(title: String, value: String, subtitle: String, color: Color) -> some View {
+        VStack(spacing: 3) {
+            Text(title)
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundColor(.secondary)
+            Text(value)
+                .font(.system(size: 20, weight: .heavy, design: .monospaced))
+                .foregroundColor(color)
+            Text(subtitle)
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+        .background(Color(UIColor.secondarySystemGroupedBackground))
+        .cornerRadius(10)
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color(UIColor.separator).opacity(0.4), lineWidth: 1)
+        )
+    }
+    
+    private func zoneItem(label: String, temp: Double, desc: String, isTarget: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.system(size: 8, weight: .bold, design: .monospaced))
+                .foregroundColor(.secondary)
+            Text(String(format: "%.1f°C", temp))
+                .font(.system(size: 15, weight: .bold, design: .monospaced))
+                .foregroundColor(isTarget ? .secondary : tempColor(temp))
+            Text(desc)
+                .font(.system(size: 8))
+                .foregroundColor(Color(UIColor.tertiaryLabel))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(8)
+        .background(Color(UIColor.systemGray6))
+        .cornerRadius(6)
+    }
+    
+    private func freqPill(label: String, interval: Double) -> some View {
         let isSelected = logManager.samplingInterval == interval
         return Button(action: {
-            logManager.samplingInterval = interval
+            logManager.updateSamplingInterval(interval)
         }) {
             Text(label)
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-                .background(isSelected ? Color.orange.opacity(0.3) : Color.white.opacity(0.06))
-                .foregroundColor(isSelected ? .orange : .gray)
-                .cornerRadius(8)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(isSelected ? Color.orange : Color.clear, lineWidth: 1)
-                )
+                .padding(.vertical, 7)
+                .background(isSelected ? Color.blue : Color(UIColor.systemGray6))
+                .foregroundColor(isSelected ? .white : .secondary)
+                .cornerRadius(6)
+        }
+    }
+    
+    private func tempColor(_ temp: Double) -> Color {
+        if temp < 42.0 {
+            return Color.blue
+        } else if temp < 60.0 {
+            return Color.orange
+        } else {
+            return Color.red
         }
     }
 }
