@@ -6,7 +6,14 @@ public struct TelemetryRecord: Identifiable, Codable {
     public var id = UUID()
     public let timestamp: Date
     public let relativeSeconds: Double
-    public let cpuTemp: Double
+    public let peakDieTemp: Double
+    public let pCoreTemp: Double
+    public let eCoreTemp: Double
+    public let gpuTemp: Double
+    public let batteryTemp: Double
+    public let chassisTemp: Double
+    public let thermalHeadroom: Double
+    public let throttlingRisk: Int
     public let isHardwareSensor: Bool
     public let thermalState: String
     public let totalCpuUsage: Double
@@ -26,112 +33,94 @@ public struct TelemetryRecord: Identifiable, Codable {
 public class LogManager: ObservableObject {
     public static let shared = LogManager()
     
-    @Published public var isRecording: Bool = false
-    @Published public var samplingInterval: Double = 0.1 // 100ms default
-    @Published public var currentTemp: Double = 37.0
+    // Live Monitoring Telemetry (ALWAYS ACTIVE, never freezes!)
+    @Published public var currentPeakTemp: Double = 37.2
+    @Published public var currentPTemp: Double = 38.0
+    @Published public var currentETemp: Double = 35.5
+    @Published public var currentGPUTemp: Double = 36.2
+    @Published public var currentBatTemp: Double = 30.0
+    @Published public var currentChassisTemp: Double = 27.5
+    @Published public var thermalHeadroom: Double = 57.8
+    @Published public var throttlingRisk: Int = 0
+    @Published public var sensorMode: String = "SoC Multi-Zone Fusion"
     @Published public var isHardwareSensor: Bool = false
     @Published public var thermalStateText: String = "NOMINAL"
+    
     @Published public var totalCpuUsage: Double = 0.0
-    @Published public var perCoreUsage: [Double] = []
+    @Published public var perCoreUsage: [Double] = [0, 0, 0, 0, 0, 0]
     @Published public var ramUsedMB: Double = 0.0
     @Published public var ramTotalGB: Double = 8.0
     @Published public var batteryLevel: Int = 100
     @Published public var isCharging: Bool = false
     @Published public var isLowPowerMode: Bool = false
     
-    // Summary telemetry
-    @Published public var maxTemp: Double = 0.0
-    @Published public var minTemp: Double = 100.0
-    @Published public var avgTemp: Double = 0.0
+    // Recording Session State
+    @Published public var isRecording: Bool = false
+    @Published public var samplingInterval: Double = 0.1 // 100ms
     @Published public var sampleCount: Int = 0
     @Published public var elapsedTime: Double = 0.0
-    @Published public var throttlingCount: Int = 0
+    @Published public var maxRecordedTemp: Double = 0.0
+    @Published public var minRecordedTemp: Double = 100.0
+    @Published public var avgRecordedTemp: Double = 0.0
     
-    // Ring buffer for UI live waveform (capped to 300 points for smooth 120Hz SwiftUI)
+    // Storage Footprint Meter
+    @Published public var totalStorageString: String = "0 KB"
+    @Published public var sessionFilesCount: Int = 0
+    
+    // Waveform Ring Buffer (last 200 points for smooth 120Hz chart)
     @Published public var chartHistory: [TelemetryRecord] = []
     
-    // Complete session storage
     private var sessionRecords: [TelemetryRecord] = []
     private var pendingBatch: [TelemetryRecord] = []
     private var currentSessionURL: URL?
-    
-    private var timer: DispatchSourceTimer?
-    private let loggerQueue = DispatchQueue(label: "com.corethermal.logger", qos: .userInitiated)
     private var sessionStartTime: Date?
     private var sumTemp: Double = 0.0
     
+    private var monitorTimer: DispatchSourceTimer?
+    private let monitorQueue = DispatchQueue(label: "com.corethermal.monitor", qos: .userInteractive)
+    private let diskQueue = DispatchQueue(label: "com.corethermal.disk", qos: .utility)
+    
     private init() {
-        prepareSessionFile()
+        startContinuousMonitoring()
+        refreshStorageFootprint()
     }
     
-    public func startLogging() {
-        guard !isRecording else { return }
+    // MARK: - Continuous Live Monitoring Engine
+    public func startContinuousMonitoring() {
+        monitorTimer?.cancel()
         
-        sessionStartTime = Date()
-        sessionRecords.removeAll()
-        pendingBatch.removeAll()
-        chartHistory.removeAll()
-        sampleCount = 0
-        elapsedTime = 0.0
-        maxTemp = 0.0
-        minTemp = 100.0
-        avgTemp = 0.0
-        sumTemp = 0.0
-        throttlingCount = 0
-        prepareSessionFile()
-        
-        let timerSource = DispatchSource.makeTimerSource(queue: loggerQueue)
+        let timer = DispatchSource.makeTimerSource(queue: monitorQueue)
         let intervalNs = Int(samplingInterval * 1_000_000_000)
-        timerSource.schedule(deadline: .now(), repeating: .nanoseconds(intervalNs), leeway: .nanoseconds(10_000))
+        timer.schedule(deadline: .now(), repeating: .nanoseconds(intervalNs), leeway: .nanoseconds(5_000))
         
-        timerSource.setEventHandler { [weak self] in
-            self?.tick()
+        timer.setEventHandler { [weak self] in
+            self?.monitorTick()
         }
         
-        self.timer = timerSource
-        timerSource.resume()
-        
-        DispatchQueue.main.async {
-            self.isRecording = true
-        }
+        self.monitorTimer = timer
+        timer.resume()
     }
     
-    public func stopLogging() {
-        guard isRecording else { return }
-        
-        timer?.cancel()
-        timer = nil
-        
-        loggerQueue.sync {
-            self.flushPendingBatchToDisk()
-        }
-        
-        DispatchQueue.main.async {
-            self.isRecording = false
-        }
+    public func updateSamplingInterval(_ newInterval: Double) {
+        self.samplingInterval = newInterval
+        startContinuousMonitoring()
     }
     
-    public func clearData() {
-        stopLogging()
-        sessionRecords.removeAll()
-        pendingBatch.removeAll()
-        chartHistory.removeAll()
-        sampleCount = 0
-        elapsedTime = 0.0
-        maxTemp = 0.0
-        minTemp = 100.0
-        avgTemp = 0.0
-        sumTemp = 0.0
-        throttlingCount = 0
-        prepareSessionFile()
-    }
-    
-    private func tick() {
+    private func monitorTick() {
         let snapshot = SystemStatsReader.shared.captureSnapshot()
-        let tempReading = TemperatureReader.shared.readTemperature(currentCpuLoad: snapshot.totalCpuUsage)
+        let thermal = TemperatureReader.shared.readDetailedTelemetry(
+            perCoreLoads: snapshot.perCoreUsage,
+            totalCpuLoad: snapshot.totalCpuUsage,
+            isCharging: snapshot.isCharging
+        )
         
         let now = Date()
-        let relativeSec = sessionStartTime != nil ? now.timeIntervalSince(sessionStartTime!) : 0.0
+        let relativeSec: Double
+        if isRecording, let start = sessionStartTime {
+            relativeSec = now.timeIntervalSince(start)
+        } else {
+            relativeSec = 0.0
+        }
         
         let thermalString: String
         switch snapshot.thermalState {
@@ -145,8 +134,15 @@ public class LogManager: ObservableObject {
         let record = TelemetryRecord(
             timestamp: now,
             relativeSeconds: (relativeSec * 100).rounded() / 100,
-            cpuTemp: tempReading.currentTemp,
-            isHardwareSensor: tempReading.isHardwareSensor,
+            peakDieTemp: thermal.peakDieTemp,
+            pCoreTemp: thermal.pCoreTemp,
+            eCoreTemp: thermal.eCoreTemp,
+            gpuTemp: thermal.gpuTemp,
+            batteryTemp: thermal.batteryTemp,
+            chassisTemp: thermal.chassisTemp,
+            thermalHeadroom: thermal.thermalHeadroom,
+            throttlingRisk: thermal.throttlingRiskPercent,
+            isHardwareSensor: thermal.isHardwareSensor,
             thermalState: thermalString,
             totalCpuUsage: snapshot.totalCpuUsage,
             perCoreUsage: snapshot.perCoreUsage,
@@ -156,29 +152,34 @@ public class LogManager: ObservableObject {
             isLowPowerMode: snapshot.isLowPowerMode
         )
         
-        sessionRecords.append(record)
-        pendingBatch.append(record)
-        
-        sumTemp += record.cpuTemp
-        let count = sessionRecords.count
-        let newMax = max(maxTemp, record.cpuTemp)
-        let newMin = min(minTemp, record.cpuTemp)
-        let newAvg = (sumTemp / Double(count) * 10).rounded() / 10
-        if snapshot.thermalState == .serious || snapshot.thermalState == .critical {
-            throttlingCount += 1
+        if isRecording {
+            sessionRecords.append(record)
+            pendingBatch.append(record)
+            sumTemp += record.peakDieTemp
+            
+            if pendingBatch.count >= 50 {
+                let toFlush = pendingBatch
+                pendingBatch.removeAll()
+                diskQueue.async { [weak self] in
+                    self?.writeBatchToDisk(records: toFlush)
+                }
+            }
         }
         
-        // Batch flush every 50 records (~5s at 10Hz) to eliminate disk IO stutter
-        if pendingBatch.count >= 50 {
-            flushPendingBatchToDisk()
-        }
-        
-        // Dispatch to UI thread
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.currentTemp = record.cpuTemp
+            self.currentPeakTemp = record.peakDieTemp
+            self.currentPTemp = record.pCoreTemp
+            self.currentETemp = record.eCoreTemp
+            self.currentGPUTemp = record.gpuTemp
+            self.currentBatTemp = record.batteryTemp
+            self.currentChassisTemp = record.chassisTemp
+            self.thermalHeadroom = record.thermalHeadroom
+            self.throttlingRisk = record.throttlingRisk
+            self.sensorMode = thermal.sensorMode
             self.isHardwareSensor = record.isHardwareSensor
             self.thermalStateText = record.thermalState
+            
             self.totalCpuUsage = record.totalCpuUsage
             self.perCoreUsage = record.perCoreUsage
             self.ramUsedMB = record.ramUsedMB
@@ -187,39 +188,87 @@ public class LogManager: ObservableObject {
             self.isCharging = record.isCharging
             self.isLowPowerMode = record.isLowPowerMode
             
-            self.sampleCount = count
-            self.elapsedTime = relativeSec
-            self.maxTemp = newMax
-            self.minTemp = newMin
-            self.avgTemp = newAvg
+            if self.isRecording {
+                let count = self.sessionRecords.count
+                self.sampleCount = count
+                self.elapsedTime = relativeSec
+                self.maxRecordedTemp = max(self.maxRecordedTemp, record.peakDieTemp)
+                self.minRecordedTemp = min(self.minRecordedTemp, record.peakDieTemp)
+                self.avgRecordedTemp = (self.sumTemp / Double(count) * 10).rounded() / 10
+            }
             
             self.chartHistory.append(record)
-            if self.chartHistory.count > 250 {
-                self.chartHistory.removeFirst(self.chartHistory.count - 250)
+            if self.chartHistory.count > 200 {
+                self.chartHistory.removeFirst(self.chartHistory.count - 200)
             }
         }
     }
     
+    // MARK: - Recording Actions (Non-blocking!)
+    public func startLogging() {
+        guard !isRecording else { return }
+        
+        sessionStartTime = Date()
+        sessionRecords.removeAll()
+        pendingBatch.removeAll()
+        sampleCount = 0
+        elapsedTime = 0.0
+        maxRecordedTemp = currentPeakTemp
+        minRecordedTemp = currentPeakTemp
+        avgRecordedTemp = currentPeakTemp
+        sumTemp = 0.0
+        prepareSessionFile()
+        
+        isRecording = true
+    }
+    
+    public func stopLogging() {
+        guard isRecording else { return }
+        isRecording = false
+        
+        let remaining = pendingBatch
+        pendingBatch.removeAll()
+        
+        diskQueue.async { [weak self] in
+            self?.writeBatchToDisk(records: remaining)
+            DispatchQueue.main.async {
+                self?.refreshStorageFootprint()
+            }
+        }
+    }
+    
+    public func clearData() {
+        stopLogging()
+        sessionRecords.removeAll()
+        pendingBatch.removeAll()
+        sampleCount = 0
+        elapsedTime = 0.0
+        maxRecordedTemp = 0.0
+        minRecordedTemp = 100.0
+        avgRecordedTemp = 0.0
+        sumTemp = 0.0
+    }
+    
+    // MARK: - Disk Management
     private func prepareSessionFile() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd_HHmmss"
-        let filename = "ThermalCore_Telemetry_\(formatter.string(from: Date())).csv"
+        let filename = "ThermalCore_Log_\(formatter.string(from: Date())).csv"
         let fileURL = docs.appendingPathComponent(filename)
         self.currentSessionURL = fileURL
         
-        let header = "Timestamp,RelativeSeconds,CPUTemp_C,IsHardwareSensor,ThermalState,TotalCPU_Percent,RAM_Used_MB,Battery_Percent,IsCharging,LowPowerMode\n"
+        let header = "Timestamp,RelativeSeconds,PeakDie_C,PCore_C,ECore_C,GPU_C,Battery_C,Chassis_C,Headroom_C,Risk_Percent,HardwareSensor,ThermalState,TotalCPU_Percent,RAM_Used_MB,Battery_Percent,IsCharging,LowPowerMode\n"
         try? header.write(to: fileURL, atomically: true, encoding: .utf8)
     }
     
-    private func flushPendingBatchToDisk() {
-        guard let url = currentSessionURL, !pendingBatch.isEmpty else { return }
+    private func writeBatchToDisk(records: [TelemetryRecord]) {
+        guard let url = currentSessionURL, !records.isEmpty else { return }
         
         var chunk = ""
-        for r in pendingBatch {
-            chunk += "\(ISO8601DateFormatter().string(from: r.timestamp)),\(r.relativeSeconds),\(r.cpuTemp),\(r.isHardwareSensor),\(r.thermalState),\(r.totalCpuUsage),\(r.ramUsedMB),\(r.batteryLevel),\(r.isCharging),\(r.isLowPowerMode)\n"
+        for r in records {
+            chunk += "\(ISO8601DateFormatter().string(from: r.timestamp)),\(r.relativeSeconds),\(r.peakDieTemp),\(r.pCoreTemp),\(r.eCoreTemp),\(r.gpuTemp),\(r.batteryTemp),\(r.chassisTemp),\(r.thermalHeadroom),\(r.throttlingRisk),\(r.isHardwareSensor),\(r.thermalState),\(r.totalCpuUsage),\(r.ramUsedMB),\(r.batteryLevel),\(r.isCharging),\(r.isLowPowerMode)\n"
         }
-        pendingBatch.removeAll()
         
         if let handle = try? FileHandle(forWritingTo: url) {
             handle.seekToEndOfFile()
@@ -230,9 +279,50 @@ public class LogManager: ObservableObject {
         }
     }
     
+    public func refreshStorageFootprint() {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        guard let files = try? FileManager.default.contentsOfDirectory(at: docs, includingPropertiesForKeys: [.fileSizeKey], options: []) else {
+            return
+        }
+        
+        var totalBytes: Int64 = 0
+        var count = 0
+        for file in files {
+            if file.pathExtension.lowercased() == "csv" || file.pathExtension.lowercased() == "json" {
+                count += 1
+                if let resourceValues = try? file.resourceValues(forKeys: [.fileSizeKey]),
+                   let size = resourceValues.fileSize {
+                    totalBytes += Int64(size)
+                }
+            }
+        }
+        
+        let formattedSize = ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+        DispatchQueue.main.async {
+            self.totalStorageString = formattedSize
+            self.sessionFilesCount = count
+        }
+    }
+    
+    public func clearAllLogs() {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        if let files = try? FileManager.default.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil, options: []) {
+            for file in files {
+                if file.pathExtension.lowercased() == "csv" || file.pathExtension.lowercased() == "json" {
+                    try? FileManager.default.removeItem(at: file)
+                }
+            }
+        }
+        clearData()
+        refreshStorageFootprint()
+    }
+    
     // MARK: - Export
     public func exportCSV() -> URL? {
-        flushPendingBatchToDisk()
+        let remaining = pendingBatch
+        pendingBatch.removeAll()
+        writeBatchToDisk(records: remaining)
+        refreshStorageFootprint()
         return currentSessionURL
     }
     
@@ -245,6 +335,7 @@ public class LogManager: ObservableObject {
         
         if let data = try? encoder.encode(sessionRecords) {
             try? data.write(to: url)
+            refreshStorageFootprint()
             return url
         }
         return nil
