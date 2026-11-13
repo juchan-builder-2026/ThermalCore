@@ -1,0 +1,50 @@
+name: Build ThermalCore IPA
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode Project
+        run: xcodegen generate
+
+      - name: Build App Archive
+        run: |
+          xcodebuild -project ThermalCore.xcodeproj \
+            -scheme ThermalCore \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/ThermalCore.xcarchive \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
+
+      - name: Package Unsigned IPA
+        run: |
+          mkdir -p Payload
+          cp -r build/ThermalCore.xcarchive/Products/Applications/ThermalCore.app Payload/
+          zip -qr ThermalCore.ipa Payload
+          ls -lh ThermalCore.ipa
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete v1.0.0 --yes || true
+          git tag -d v1.0.0 || true
+          gh release create v1.0.0 ThermalCore.ipa \
+            --title "ThermalCore Pro v1.0.0" \
+            --notes "ThermalCore Pro: Real-time 0.1s CPU Temperature & Hardware Telemetry Suite for iOS (IOKit PMU Sensors, Background Keep-Alive Audio, CSV/JSON Export, 6-Core A17 Pro Telemetry)"
