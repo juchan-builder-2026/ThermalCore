@@ -11,7 +11,7 @@ private typealias IOHIDEventSystemClientCreateFunc = @convention(c) (CFAllocator
 private typealias IOHIDEventSystemClientSetMatchingFunc = @convention(c) (IOHIDEventSystemClientRef?, CFDictionary?) -> Int32
 private typealias IOHIDEventSystemClientCopyServicesFunc = @convention(c) (IOHIDEventSystemClientRef?) -> CFArray?
 private typealias IOHIDServiceClientCopyEventFunc = @convention(c) (IOHIDServiceClientRef?, Int64, Int32, Int64) -> IOHIDEventRef?
-private typealias IOHIDServiceClientCopyPropertyFunc = @convention(c) (IOHIDServiceClientRef?, CFString?) -> CFTypeRef?
+private typealias IOHIDServiceClientCopyPropertyFunc = @convention(c) (IOHIDServiceClientRef?, CFString?) -> Unmanaged<CFString>?
 private typealias IOHIDEventGetFloatValueFunc = @convention(c) (IOHIDEventRef?, UInt32) -> Double
 
 private let kIOHIDEventTypeTemperature: Int64 = 15
@@ -110,8 +110,7 @@ public class TemperatureReader {
                     var sensorName = "Sensor_\(i)"
                     if let copyProp = serviceCopyProperty,
                        let prop = copyProp(service, "Product" as CFString) {
-                        let cfStr = Unmanaged<CFString>.fromOpaque(UnsafeRawPointer(prop)).takeUnretainedValue()
-                        sensorName = cfStr as String
+                        sensorName = prop.takeUnretainedValue() as String
                     }
                     
                     if let event = copyEvent(service, kIOHIDEventTypeTemperature, 0, 0) {
